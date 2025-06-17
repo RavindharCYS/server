@@ -25,6 +25,7 @@ const PORT = process.env.PORT || 3001;
 const allowedOrigins = [
   'http://localhost:5173', // Vite dev server (default)
   'http://127.0.0.1:5173',
+  'https://tzurglobalreact.web.app'
   // Add your production frontend URL here when you deploy
   // e.g., 'https://your-frontend-domain.com'
   // If your Railway frontend is, for example, my-awesome-app.up.railway.app
