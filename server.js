@@ -3,9 +3,9 @@ require('dotenv').config(); // Load environment variables from .env file FIRST
 
 const express = require('express');
 const cors = require('cors');
-const path = require('path'); // Required for serving static files if you store resumes locally
+const path = require('path');
 const mongoose = require('mongoose'); // Import mongoose directly for graceful shutdown
-const connectDB = require('./config/db'); // Import DB connection
+const connectDB = require('./config/db');
 
 // Import route handlers
 const bookingRoutes = require('./routes/bookingRoutes');
@@ -23,30 +23,19 @@ const PORT = process.env.PORT || 3001;
 
 // CORS Configuration
 const allowedOrigins = [
-  'http://localhost:5173', // Vite dev server (default)
+  'http://localhost:5173',
   'http://127.0.0.1:5173',
-  'https://tzurglobalreact.web.app'
-  // Add your production frontend URL here when you deploy
-  // e.g., 'https://your-frontend-domain.com'
-  // If your Railway frontend is, for example, my-awesome-app.up.railway.app
-  // 'https://my-awesome-app.up.railway.app'
+  'https://tzurglobalreact.web.app' // Your deployed frontend URL
+  // Add 'https://www.tzurglobalreact.web.app' if you also use a www version
 ];
-
-// If your backend is on Railway, you might need to allow its own generated URL
-// if some internal health checks or services need to access it.
-// This is less common for typical browser CORS, but good to keep in mind.
-// const railwayAppUrl = process.env.RAILWAY_STATIC_URL; // Railway might provide this
-// if (railwayAppUrl && !allowedOrigins.includes(railwayAppUrl)) {
-//   allowedOrigins.push(railwayAppUrl);
-// }
-
 
 app.use(cors({
   origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps or curl requests, or server-to-server)
+    // Allow requests with no origin (like mobile apps, curl, server-to-server)
     if (!origin) return callback(null, true);
     if (allowedOrigins.indexOf(origin) === -1) {
-      const msg = `The CORS policy for this site does not allow access from the specified Origin: ${origin}`;
+      const msg = `CORS Error: The policy does not allow access from the specified Origin: ${origin}`;
+      console.error(msg); // Log blocked origins for debugging
       return callback(new Error(msg), false);
     }
     return callback(null, true);
@@ -54,118 +43,109 @@ app.use(cors({
 }));
 
 // Body Parsers
-app.use(express.json()); // To parse JSON request bodies (Content-Type: application/json)
-app.use(express.urlencoded({ extended: true })); // To parse URL-encoded request bodies (Content-Type: application/x-www-form-urlencoded)
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-// Serve static files (e.g., uploaded resumes if stored locally)
-// The 'uploads' directory is where multer will save files.
-// This makes files in `server/uploads/resumes` accessible via `/uploads/resumes/filename.pdf`
-// IMPORTANT: For platforms like Railway, local file storage is ephemeral.
-// You MUST switch to a cloud storage solution (S3, Google Cloud Storage) for production.
-// This static serving will then likely be removed or adapted.
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+// --- Static File Serving for Uploads (Needs Revision for Production on Ephemeral Filesystems) ---
+// IMPORTANT FOR RAILWAY & SIMILAR PLATFORMS:
+// The local file system on platforms like Railway is often ephemeral.
+// Files saved here (like resumes via multer's diskStorage) WILL BE LOST on redeploys or service restarts.
+// For production, you MUST switch to a cloud storage solution (e.g., AWS S3, Google Cloud Storage, Cloudinary)
+// for handling user file uploads.
+// Once cloud storage is implemented, this local static serving for '/uploads/resumes' will likely be removed
+// or be used only for other genuinely static assets not related to user uploads.
+const localUploadsPath = path.join(__dirname, 'uploads');
+app.use('/uploads', express.static(localUploadsPath));
 
 
 // --- Health Check Endpoint ---
-// Railway (and other PaaS) will use this to determine if your app is healthy.
+// Essential for platforms like Railway to monitor application health.
 app.get('/health', (req, res) => {
-  // You can add more sophisticated checks here if needed (e.g., DB connectivity)
-  // For now, a simple 200 OK is often sufficient to start.
   const healthStatus = {
     status: 'UP',
     timestamp: new Date().toISOString(),
-    // Check mongoose connection state (0: disconnected, 1: connected, 2: connecting, 3: disconnecting)
-    dbReadyState: mongoose.connection.readyState
+    dbReadyState: mongoose.connection.readyState, // (0: disconn, 1: conn, 2: connecting, 3: disc)
+    dbStatus: mongoose.STATES[mongoose.connection.readyState] || 'UNKNOWN'
   };
 
   if (mongoose.connection.readyState === 1) { // 1 means connected
     res.status(200).json(healthStatus);
   } else {
-    // If DB is not connected, signal service unavailable but don't crash
-    // Railway might still mark this as unhealthy depending on its criteria.
-    // Consider what status code is appropriate for your health check definition.
-    // 503 Service Unavailable is a common choice if a critical dependency is down.
     healthStatus.status = 'DEGRADED';
-    healthStatus.message = 'Database connection not ready.';
-    res.status(503).json(healthStatus);
+    healthStatus.message = 'Database connection issue.';
+    res.status(503).json(healthStatus); // 503 Service Unavailable
   }
 });
 
 
 // --- API Routes ---
-
-// A simple test route to check if the API is up
 app.get('/api/test', (req, res) => {
   res.json({ message: 'Tzur Global Backend API is live and responsive!' });
 });
 
-// Mount the specific route handlers
 app.use('/api/bookings', bookingRoutes);
 app.use('/api/contact', contactRoutes);
 app.use('/api/careers', careerRoutes);
 app.use('/api/newsletter', newsletterRoutes);
 
-// --- Catch-all for 404 Not Found (if no routes matched) ---
+// --- Catch-all for 404 Not Found ---
 app.use((req, res, next) => {
-  res.status(404).json({ message: `Resource not found at ${req.originalUrl}` });
+  res.status(404).json({ message: `Resource not found at ${req.method} ${req.originalUrl}` });
 });
 
 // --- Global Error Handler ---
-// This should be the LAST piece of middleware
 app.use((err, req, res, next) => {
-  console.error('SERVER ERROR:', err.stack || err.message || err);
+  console.error('GLOBAL SERVER ERROR:', err.stack || err.message || err);
 
-  // Multer error handling (optional: for more specific multer error messages)
   if (err.code === 'LIMIT_FILE_SIZE') {
     return res.status(400).json({ message: 'File is too large. Max size is 5MB.' });
   }
-  // Check for custom error code set in uploadMiddleware
   if (err.code === 'INVALID_FILE_TYPE' && err.message && err.message.startsWith('Invalid file type')) {
     return res.status(400).json({ message: err.message });
   }
-  // Handle other multer errors more generically if needed
   if (err.name === 'MulterError') {
-    return res.status(400).json({ message: `File upload error: ${err.message}`});
+    return res.status(400).json({ message: `File upload error: ${err.message}` });
   }
-
 
   res.status(err.status || 500).json({
     message: err.message || 'An unexpected server error occurred.',
-    // In development, you might want to send more error details
     error: process.env.NODE_ENV === 'development' ? { name: err.name, message: err.message, stack: err.stack } : {},
   });
 });
 
 // --- Start the Server ---
 const server = app.listen(PORT, () => {
-  console.log(`Backend server for Tzur Global is listening on http://localhost:${PORT}`);
-  console.log(`NODE_ENV is: ${process.env.NODE_ENV || 'not set (defaults to development in error handler)'}`);
-  console.log(`Attempting to serve static files from: ${path.join(__dirname, 'uploads')}`);
-  // The following line for uploads directory check is in uploadMiddleware.js
-  // and will run when that module is first required.
+  console.log(`Backend server for Tzur Global is listening on http://localhost:${PORT} (actual port on Railway will be dynamic)`);
+  console.log(`NODE_ENV is: ${process.env.NODE_ENV || 'not set'}`);
+  // The check for uploads directory creation is in uploadMiddleware.js
+  // Log related to serving local uploads:
+  console.log(`Serving files from local '/uploads' directory: ${localUploadsPath}. (NOTE: Review for production on ephemeral filesystems like Railway)`);
 });
 
-// --- Graceful Shutdown ---
+// --- Graceful Shutdown Logic ---
 const gracefulShutdown = (signal) => {
-  console.log(`\nReceived ${signal}. Closing HTTP server.`);
-  server.close(() => {
+  console.log(`\nReceived ${signal}. Initiating graceful shutdown.`);
+  server.close((err) => {
+    if (err) {
+      console.error('Error during HTTP server close:', err);
+      // process.exit(1); // Optionally exit if server close fails critically
+    }
     console.log('HTTP server closed.');
-    // Close MongoDB connection
-    mongoose.connection.close(false).then(() => { // `false` for Mongoose 6+ to not force close
+    mongoose.connection.close(false).then(() => {
       console.log('MongoDB connection closed successfully.');
-      process.exit(0);
-    }).catch(err => {
-      console.error('Error closing MongoDB connection:', err);
-      process.exit(1);
+      process.exit(0); // Exit after DB connection is closed
+    }).catch(dbErr => {
+      console.error('Error closing MongoDB connection:', dbErr);
+      process.exit(1); // Exit with error if DB close fails
     });
   });
 
-  // If server hasn't finished in reasonable time, force shut
+  // Force shutdown if graceful shutdown takes too long
   setTimeout(() => {
-    console.error('Could not close connections in time, forcefully shutting down');
+    console.error('Graceful shutdown timed out. Forcefully shutting down.');
     process.exit(1);
-  }, 10000); // 10 seconds
+  }, 10000); // 10-second timeout
 };
 
-process.on('SIGTERM', () => gracefulShutdown('SIGTERM')); // Standard signal for termination (e.g., from Railway, Docker, PM2)
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM')); // Standard signal for termination
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));   // For Ctrl+C in terminal
